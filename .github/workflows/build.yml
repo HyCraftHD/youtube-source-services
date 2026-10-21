@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: read
+  # Test failures are reported as check annotations
+  checks: write
 
 jobs:
   test:
@@ -17,7 +19,8 @@ jobs:
       matrix:
         include:
           # One runner per platform Deno publishes builds for. Java 8 is the oldest version the library supports and
-          # also runs Gradle; Temurin has no Java 8 builds for ARM macOS and Windows, Zulu does.
+          # also runs Gradle; Temurin has no Java 8 build for ARM macOS, Zulu does. Nobody ships Java 8 for ARM
+          # Windows, so that runner uses Java 17 to test the native ARM64 Deno build.
           - name: Linux x64
             os: ubuntu-latest
             distribution: temurin
@@ -30,10 +33,10 @@ jobs:
             os: windows-latest
             distribution: temurin
             java: 8
-          - name: Windows ARM64
+          - name: Windows ARM64 (Java 17)
             os: windows-11-arm
             distribution: zulu
-            java: 8
+            java: 17
           - name: macOS ARM64
             os: macos-latest
             distribution: zulu
@@ -53,9 +56,9 @@ jobs:
         shell: bash
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: ${{ matrix.distribution }}
           java-version: ${{ matrix.java }}
@@ -67,6 +70,14 @@ jobs:
 
       - name: Integration tests
         run: ./gradlew integrationTest --stacktrace
+
+      - name: Report test results
+        if: always()
+        uses: mikepenz/action-junit-report@v5
+        with:
+          report_paths: build/test-results/**/*.xml
+          check_name: Test results (${{ matrix.name }})
+          detailed_summary: true
 
       - name: Upload test reports
         if: failure()
