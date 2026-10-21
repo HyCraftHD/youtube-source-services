@@ -1,0 +1,8 @@
+* text=auto
+
+# Shell scripts must keep LF, otherwise they do not run on Linux/macOS when checked out with core.autocrlf=true
+gradlew text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+
+*.jar binary
