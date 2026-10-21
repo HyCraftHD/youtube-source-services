@@ -55,6 +55,29 @@ class FileUtilsTest {
     }
 
     @Test
+    void parseSha256FromSha256sumOutput() throws IOException {
+        // Format of Deno's checksum files for Linux and macOS
+        assertEquals("4b2f5edd2639b7470f034238b321d7002d8dfb4726d8558f52c17afac370eb2c",
+            FileUtils.parseSha256("4b2f5edd2639b7470f034238b321d7002d8dfb4726d8558f52c17afac370eb2c  deno-x86_64-apple-darwin.zip\n"));
+    }
+
+    @Test
+    void parseSha256FromGetFileHashOutput() throws IOException {
+        // Format of Deno's checksum files for Windows
+        assertEquals("cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf",
+            FileUtils.parseSha256("\r\n" +
+                "Algorithm : SHA256\r\n" +
+                "Hash      : CBA84B26E0DF5AE7F74FC66B86A95B866872A86292EBD84FA1E959927EDD93BF\r\n" +
+                "Path      : C:\\a\\deno\\deno\\target\\release\\deno-x86_64-pc-windows-msvc.zip\r\n" +
+                "\r\n"));
+    }
+
+    @Test
+    void parseSha256RejectsFilesWithoutHash() {
+        assertThrows(IOException.class, () -> FileUtils.parseSha256("Not Found"));
+    }
+
+    @Test
     void unzipStripsLeadingFolder() throws IOException {
         Path zip = zip("repo-abc123/", "repo-abc123/server.ts", "repo-abc123/src/", "repo-abc123/src/a.ts");
         Path target = temp.resolve("out");

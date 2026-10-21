@@ -45,7 +45,7 @@ public final class DenoRuntime {
             String url = "https://github.com/denoland/deno/releases/download/" + Versions.DENO + "/" + asset;
 
             Path zip = FileUtils.download(url, baseDir.resolve(asset));
-            FileUtils.verifySha256(zip, FileUtils.fetchString(url + ".sha256sum").trim().split("\\s+")[0]);
+            FileUtils.verifySha256(zip, FileUtils.parseSha256(FileUtils.fetchString(url + ".sha256sum")));
             FileUtils.deleteRecursively(dir);
             FileUtils.unzip(zip, dir, 0);
             Files.delete(zip);

@@ -15,6 +15,9 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
@@ -28,6 +31,7 @@ final class FileUtils {
     private static final int CONNECT_TIMEOUT_MS = 15_000;
     private static final int READ_TIMEOUT_MS = 60_000;
     private static final char[] HEX = "0123456789abcdef".toCharArray();
+    private static final Pattern SHA256 = Pattern.compile("\\b[0-9a-fA-F]{64}\\b");
 
     private FileUtils() {
     }
@@ -124,6 +128,18 @@ final class FileUtils {
             Files.delete(file);
             throw new IOException("Checksum mismatch for " + file.getFileName() + ": expected " + expected + ", got " + actual);
         }
+    }
+
+    /**
+     * Extracts the hash from a checksum file. Deno publishes {@code sha256sum} output ({@code <hash>  <file>}) for
+     * Linux and macOS, but PowerShell {@code Get-FileHash} output ({@code Hash : <HASH>}) for Windows.
+     */
+    static String parseSha256(String checksumFile) throws IOException {
+        Matcher matcher = SHA256.matcher(checksumFile);
+        if (!matcher.find()) {
+            throw new IOException("No SHA-256 hash found in checksum file: " + checksumFile.trim());
+        }
+        return matcher.group().toLowerCase(Locale.ROOT);
     }
 
     static String toHex(byte[] bytes) {

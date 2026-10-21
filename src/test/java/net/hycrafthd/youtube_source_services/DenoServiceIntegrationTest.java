@@ -105,7 +105,7 @@ class DenoServiceIntegrationTest {
 
         IOException error = assertThrows(IOException.class, service::start);
 
-        assertTrue(error.getCause().getMessage().contains("exited before it was ready"), error.toString());
+        assertTrue(error.getCause() != null && String.valueOf(error.getCause().getMessage()).contains("exited before it was ready"), error.toString());
         assertFalse(service.isRunning());
     }
 
