@@ -3,7 +3,6 @@ package net.hycrafthd.youtube_source_services;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,6 +17,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -25,9 +25,10 @@ import java.util.function.Consumer;
 /**
  * A local HTTP service running in its own Deno process.
  * <p>
- * Port and token are chosen once per instance, so the URL handed to youtube-source stays valid when the process is
- * stopped and started again or restarted after a crash. The service only listens on 127.0.0.1 and rejects requests
- * without the token.
+ * URL and token are fixed per instance, so the URL handed to youtube-source stays valid when the process is stopped
+ * and started again or restarted after a crash. The fixed port is held open by a {@link PortForwarder} for the whole
+ * lifetime, and the process itself listens on a fresh internal port on every launch, so no other program can take the
+ * port in between. Everything only listens on 127.0.0.1, and the service rejects requests without the token.
  * <p>
  * Starts, crash handling and restarts all run one after another on a single thread per service, so they never race
  * each other. {@link #stop()} is the only thing that acts from outside that thread: it kills the process directly, so
@@ -36,12 +37,13 @@ import java.util.function.Consumer;
 abstract class DenoService implements LocalService {
 
     private static final long STABLE_UPTIME_MS = TimeUnit.MINUTES.toMillis(1);
+    private static final int PORT_ATTEMPTS = 3;
 
     protected final DenoRuntime runtime;
     protected final Path dir;
     protected final Consumer<String> log;
     private final String name;
-    private final int port;
+    private final PortForwarder forwarder;
     private final String token;
     private final long startTimeoutSeconds;
     private final int maxRestarts;
@@ -71,9 +73,7 @@ abstract class DenoService implements LocalService {
         this.startTimeoutSeconds = startTimeoutSeconds;
         this.maxRestarts = maxRestarts;
 
-        try (ServerSocket socket = new ServerSocket(0)) {
-            this.port = socket.getLocalPort();
-        }
+        this.forwarder = new PortForwarder(name);
 
         byte[] tokenBytes = new byte[24];
         new SecureRandom().nextBytes(tokenBytes);
@@ -92,7 +92,7 @@ abstract class DenoService implements LocalService {
 
     @Override
     public String getUrl() {
-        return "http://127.0.0.1:" + port;
+        return "http://127.0.0.1:" + forwarder.getPort();
     }
 
     @Override
@@ -134,6 +134,7 @@ abstract class DenoService implements LocalService {
     /** Stops the process, including one that is still starting, and cancels pending restarts. It can be started again. */
     void stop() {
         stops.incrementAndGet();
+        forwarder.setTarget(0);
         Process current = process.getAndSet(null);
         if (current != null) {
             destroy(current);
@@ -145,6 +146,23 @@ abstract class DenoService implements LocalService {
         Path deno = runtime.getExecutable();
         Path app = install();
 
+        // The internal port is free when chosen, but another program can take it before the process binds it
+        for (int attempt = 1; ; attempt++) {
+            int port = internalPort();
+            try {
+                run(deno, app, port, stopsAtRequest);
+                return;
+            } catch (PortInUseException e) {
+                if (attempt >= PORT_ATTEMPTS) {
+                    throw new IOException(name + " found no free port in " + attempt + " attempts", e);
+                }
+                log.accept("[" + name + "] port " + port + " is in use, trying another one");
+            }
+        }
+    }
+
+    /** Runs on the executor. */
+    private void run(Path deno, Path app, int port, int stopsAtRequest) throws IOException, InterruptedException {
         List<String> command = new ArrayList<>();
         command.add(deno.toString());
         command.add("run");
@@ -170,6 +188,7 @@ abstract class DenoService implements LocalService {
         }
 
         CompletableFuture<Void> readyFuture = new CompletableFuture<>();
+        AtomicBoolean portInUse = new AtomicBoolean();
         String readyMarker = readyMarker();
 
         // The output must be drained continuously, otherwise the child blocks once the pipe buffer is full
@@ -180,6 +199,9 @@ abstract class DenoService implements LocalService {
                     log.accept("[" + name + "] " + line);
                     if (line.contains(readyMarker)) {
                         readyFuture.complete(null);
+                    } else if (line.contains("AddrInUse")) {
+                        // Deno's error name for EADDRINUSE on every platform
+                        portInUse.set(true);
                     }
                 }
             } catch (IOException ignored) {
@@ -199,16 +221,35 @@ abstract class DenoService implements LocalService {
             if (stops.get() != stopsAtRequest) {
                 throw new CancellationException(name + " was stopped while starting");
             }
+            if (portInUse.get()) {
+                throw new PortInUseException();
+            }
             throw new IOException(name + " failed to start", e instanceof ExecutionException ? e.getCause() : e);
         } catch (InterruptedException e) {
             abandon(started);
             throw e;
         }
 
+        forwarder.setTarget(port);
+        // A stop() in the meantime has already reset the target, which this may have overwritten
+        if (process.get() != started) {
+            forwarder.setTarget(0);
+            throw new CancellationException(name + " was stopped while starting");
+        }
         ready = started;
         startedAt = System.currentTimeMillis();
         afterStart();
-        log.accept("[" + name + "] ready on " + getUrl() + " after " + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) + " ms");
+        log.accept("[" + name + "] ready on " + getUrl() + " (internal port " + port + ") after " + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) + " ms");
+    }
+
+    /** The port the process listens on internally, chosen anew for every launch. */
+    int internalPort() throws IOException {
+        return PortForwarder.freePort();
+    }
+
+    /** Port the forwarder currently sends connections to, 0 while the service is not running. */
+    int getInternalPort() {
+        return forwarder.getTarget();
     }
 
     private void abandon(Process started) {
@@ -222,6 +263,7 @@ abstract class DenoService implements LocalService {
         if (!process.compareAndSet(exited, null)) {
             return;
         }
+        forwarder.setTarget(0);
 
         log.accept("[" + name + "] exited unexpectedly with code " + exitCode(exited));
         if (System.currentTimeMillis() - startedAt > STABLE_UPTIME_MS) {
@@ -255,6 +297,9 @@ abstract class DenoService implements LocalService {
                 scheduleRestart(stopsAtCrash);
             }
         }, failedRestarts * 2000L, TimeUnit.MILLISECONDS);
+    }
+
+    private static final class PortInUseException extends IOException {
     }
 
     private static int exitCode(Process process) {

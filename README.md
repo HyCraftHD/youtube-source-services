@@ -13,7 +13,11 @@ pinned commits into a directory of your choice. Each service then runs as its ow
 
 - listens only on `127.0.0.1` and rejects requests without a random per-session token,
 - runs in Deno's permission sandbox (read/write access only to its own directories),
-- is restarted automatically on the same port if it crashes.
+- is restarted automatically if it crashes.
+
+The URL of each service never changes: the library itself keeps its port open for the whole session and forwards
+connections to the Deno process, which gets a fresh internal port on every start. So no other program can take the port
+in between, and while a service is down, requests fail right away instead of running into a timeout.
 
 The library has no dependencies and targets Java 8.
 

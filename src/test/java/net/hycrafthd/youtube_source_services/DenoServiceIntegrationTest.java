@@ -5,7 +5,8 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.net.ConnectException;
+import java.net.InetAddress;
+import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -20,6 +21,7 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -73,7 +75,8 @@ class DenoServiceIntegrationTest {
         service.stop();
 
         assertFalse(service.isRunning());
-        assertThrows(ConnectException.class, () -> IntegrationSupport.get(service.getUrl(), service.getToken()));
+        assertEquals(0, service.getInternalPort());
+        assertRefusedQuickly();
     }
 
     @Test
@@ -139,6 +142,32 @@ class DenoServiceIntegrationTest {
     }
 
     @Test
+    void retriesWithAnotherInternalPortWhenItIsTaken() throws Exception {
+        service = new TestService(5);
+        try (ServerSocket taken = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+            service.takenPort = taken.getLocalPort();
+
+            await(service.start());
+
+            assertTrue(service.isRunning());
+            assertNotEquals(taken.getLocalPort(), service.getInternalPort());
+            assertEquals(200, IntegrationSupport.get(service.getUrl(), service.getToken()).status);
+        }
+    }
+
+    @Test
+    void refusesRequestsQuicklyWhileTheServiceIsDown() throws Exception {
+        service = new TestService(0);
+        await(service.start());
+
+        IntegrationSupport.get(service.getUrl() + "/crash", service.getToken());
+        IntegrationSupport.waitUntil(() -> !service.isRunning(), 10_000);
+
+        assertEquals(0, service.getInternalPort());
+        assertRefusedQuickly();
+    }
+
+    @Test
     void doesNotRestartAfterStop() throws Exception {
         service = new TestService(5);
         await(service.start());
@@ -161,6 +190,13 @@ class DenoServiceIntegrationTest {
         Throwable cause = error.getCause().getCause();
         assertTrue(cause != null && String.valueOf(cause.getMessage()).contains("exited before it was ready"), error.toString());
         assertFalse(service.isRunning());
+    }
+
+    /** The fixed port stays open, but connections are closed right away instead of running into a timeout. */
+    private void assertRefusedQuickly() {
+        long before = System.currentTimeMillis();
+        assertThrows(IOException.class, () -> IntegrationSupport.get(service.getUrl(), service.getToken()));
+        assertTrue(System.currentTimeMillis() - before < 5_000, "the request was not refused quickly");
     }
 
     private static void await(CompletableFuture<Void> future) throws Exception {
@@ -189,6 +225,8 @@ class DenoServiceIntegrationTest {
         final Map<String, String> environment = new HashMap<>();
         volatile int starts;
         volatile boolean launched;
+        /** Handed out as the first internal port, to simulate another program taking it. */
+        volatile int takenPort;
 
         TestService(int maxRestarts) throws IOException {
             super(IntegrationSupport.runtime(), "test-service", IntegrationSupport::log, 120, maxRestarts);
@@ -210,6 +248,16 @@ class DenoServiceIntegrationTest {
         @Override
         protected Map<String, String> environment(Path app) {
             return new HashMap<>(environment);
+        }
+
+        @Override
+        int internalPort() throws IOException {
+            int port = takenPort;
+            if (port != 0) {
+                takenPort = 0;
+                return port;
+            }
+            return super.internalPort();
         }
 
         @Override
