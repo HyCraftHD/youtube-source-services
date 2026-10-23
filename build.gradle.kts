@@ -1,9 +1,6 @@
-import org.ajoberstar.grgit.Grgit
-
 plugins {
     `java-library`
     `maven-publish`
-    id("org.ajoberstar.grgit") version "5.2.0"
 }
 
 val (gitVersion, release) = versionFromGit()
@@ -110,17 +107,20 @@ publishing {
     }
 }
 
+// Uses the git command line instead of grgit, which needs Java 11 to run Gradle while the tests run Gradle on Java 8
 fun versionFromGit(): Pair<String, Boolean> {
-    Grgit.open(mapOf("currentDir" to project.rootDir)).use { git ->
-        val headTag = git.tag
-            .list()
-            .find { it.commit.id == git.head().id }
+    fun git(vararg args: String) = providers.exec {
+        commandLine("git", *args)
+        workingDir = rootDir
+    }.standardOutput.asText.get().trim()
 
-        val clean = git.status().isClean || System.getenv("CI") != null
-        if (!clean) {
-            logger.lifecycle("Git state is dirty, version is a snapshot.")
-        }
+    val head = git("rev-parse", "HEAD")
+    val headTag = git("tag", "--points-at", "HEAD").lines().firstOrNull { it.isNotBlank() }
 
-        return if (headTag != null && clean) headTag.name to true else "${git.head().id}-SNAPSHOT" to false
+    val clean = git("status", "--porcelain").isEmpty() || System.getenv("CI") != null
+    if (!clean) {
+        logger.lifecycle("Git state is dirty, version is a snapshot.")
     }
+
+    return if (headTag != null && clean) headTag to true else "$head-SNAPSHOT" to false
 }
