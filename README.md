@@ -13,7 +13,8 @@ pinned commits into a directory of your choice. Each service then runs as its ow
 
 - listens only on `127.0.0.1` and rejects requests without a random per-session token,
 - runs in Deno's permission sandbox (read/write access only to its own directories),
-- is restarted automatically if it crashes.
+- is restarted automatically if it crashes,
+- ends together with the JVM, even when the JVM is killed and its shutdown hooks do not run.
 
 The URL of each service never changes: the library itself keeps its port open for the whole session and forwards
 connections to the Deno process, which gets a fresh internal port on every start. So no other program can take the port
@@ -60,6 +61,9 @@ Versions, download URLs, repositories, the start timeout and the restart limit a
 [`services.properties`](src/main/resources/net/hycrafthd/youtube_source_services/services.properties).
 Bump `yt-cipher.commit` and `ejs.commit` together: yt-cipher's Dockerfile names the ejs commit it expects. If a new
 commit changes the log line a service prints once it is ready, update its `ready-marker` as well.
+
+ejs's npm dependencies are pinned through an import map to the versions in its own `package.json`. Unversioned imports
+in yt-cipher itself are pinned with `yt-cipher.pinned-imports`; check for new ones when bumping `yt-cipher.commit`.
 
 ## Building and testing
 

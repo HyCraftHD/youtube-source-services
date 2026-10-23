@@ -4,15 +4,15 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.io.BufferedReader;
+import java.io.File;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.net.InetAddress;
 import java.net.ServerSocket;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -168,6 +168,37 @@ class DenoServiceIntegrationTest {
     }
 
     @Test
+    void endsWhenTheJvmIsKilled() throws Exception {
+        // A separate JVM runs the service and is then killed, so its shutdown hooks cannot stop the process
+        String java = System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
+        List<String> command = Arrays.asList(java, "-cp", System.getProperty("java.class.path"), TestService.class.getName(),
+            IntegrationSupport.runtime().getBaseDir().toString());
+        Process jvm = new ProcessBuilder(command).redirectErrorStream(true).start();
+
+        String url;
+        String token;
+        try {
+            String[] ready = awaitReadyLine(jvm);
+            url = "http://127.0.0.1:" + ready[1];
+            token = ready[2];
+            // Straight to the Deno process, past the forwarder that dies with the JVM anyway
+            assertEquals(200, IntegrationSupport.get(url, token).status);
+        } finally {
+            jvm.destroyForcibly();
+        }
+        assertTrue(jvm.waitFor(30, TimeUnit.SECONDS));
+
+        IntegrationSupport.waitUntil(() -> {
+            try {
+                IntegrationSupport.get(url, token);
+                return false;
+            } catch (IOException e) {
+                return true;
+            }
+        }, 15_000);
+    }
+
+    @Test
     void doesNotRestartAfterStop() throws Exception {
         service = new TestService(5);
         await(service.start());
@@ -199,75 +230,29 @@ class DenoServiceIntegrationTest {
         assertTrue(System.currentTimeMillis() - before < 5_000, "the request was not refused quickly");
     }
 
-    private static void await(CompletableFuture<Void> future) throws Exception {
-        future.get(2, TimeUnit.MINUTES);
+    /** Reads the child JVM's output until the READY line, failing if it ends first. Keeps draining it afterwards. */
+    private static String[] awaitReadyLine(Process jvm) throws Exception {
+        BufferedReader output = new BufferedReader(new InputStreamReader(jvm.getInputStream(), StandardCharsets.UTF_8));
+        CompletableFuture<String[]> ready = new CompletableFuture<>();
+        Thread reader = new Thread(() -> {
+            try {
+                String line;
+                while ((line = output.readLine()) != null) {
+                    IntegrationSupport.log("[child jvm] " + line);
+                    if (line.startsWith("READY ")) {
+                        ready.complete(line.split(" "));
+                    }
+                }
+            } catch (IOException ignored) {
+            }
+            ready.completeExceptionally(new IOException("The child JVM ended before the service was ready"));
+        });
+        reader.setDaemon(true);
+        reader.start();
+        return ready.get(2, TimeUnit.MINUTES);
     }
 
-    /** Serves 200 with the right token, 401 without, and exits on /crash. */
-    private static final class TestService extends DenoService {
-
-        private static final String SCRIPT = String.join("\n",
-            "if (Deno.env.get('EXIT_IMMEDIATELY') === '1') Deno.exit(2);",
-            "const delay = Number(Deno.env.get('START_DELAY_MS') ?? '0');",
-            "if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));",
-            "const token = Deno.env.get('API_TOKEN');",
-            "Deno.serve({",
-            "  hostname: Deno.env.get('HOST'),",
-            "  port: Number(Deno.env.get('PORT')),",
-            "  onListen: () => console.log('test service listening'),",
-            "}, (request) => {",
-            "  if (request.headers.get('Authorization') !== token) return new Response('unauthorized', { status: 401 });",
-            "  if (new URL(request.url).pathname === '/crash') setTimeout(() => Deno.exit(3), 50);",
-            "  return new Response('ok');",
-            "});",
-            "");
-
-        final Map<String, String> environment = new HashMap<>();
-        volatile int starts;
-        volatile boolean launched;
-        /** Handed out as the first internal port, to simulate another program taking it. */
-        volatile int takenPort;
-
-        TestService(int maxRestarts) throws IOException {
-            super(IntegrationSupport.runtime(), "test-service", IntegrationSupport::log, 120, maxRestarts);
-        }
-
-        @Override
-        protected Path install() throws IOException {
-            Path app = Files.createDirectories(dir.resolve("app"));
-            FileUtils.writeString(app.resolve("server.js"), SCRIPT);
-            return app;
-        }
-
-        @Override
-        protected List<String> arguments(Path app) {
-            launched = true;
-            return Arrays.asList("--allow-net=127.0.0.1", "--allow-env", "server.js");
-        }
-
-        @Override
-        protected Map<String, String> environment(Path app) {
-            return new HashMap<>(environment);
-        }
-
-        @Override
-        int internalPort() throws IOException {
-            int port = takenPort;
-            if (port != 0) {
-                takenPort = 0;
-                return port;
-            }
-            return super.internalPort();
-        }
-
-        @Override
-        protected String readyMarker() {
-            return "test service listening";
-        }
-
-        @Override
-        protected void afterStart() {
-            starts++;
-        }
+    private static void await(CompletableFuture<Void> future) throws Exception {
+        future.get(2, TimeUnit.MINUTES);
     }
 }

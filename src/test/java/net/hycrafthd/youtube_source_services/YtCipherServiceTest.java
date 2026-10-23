@@ -1,44 +1,71 @@
 package net.hycrafthd.youtube_source_services;
 
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class YtCipherServiceTest {
 
-    @TempDir
-    Path temp;
-
     @Test
-    void patchEjsRewritesBareImports() throws IOException {
-        Path solver = temp.resolve("yt").resolve("solver").resolve("solvers.ts");
-        Files.createDirectories(solver.getParent());
-        FileUtils.writeString(solver,
-            "import { parse } from \"meriyah\";\n" +
-            "import { generate } from 'astring';\n" +
-            "import { other } from \"./other.ts\";\n");
+    void ejsImportsUseThePackageJsonVersions() throws IOException {
+        String packageJson = "{\n" +
+            "  \"name\": \"ejs\",\n" +
+            "  \"scripts\": {\n    \"bundle\": \"rollup -c\"\n  },\n" +
+            "  \"dependencies\": {\n    \"astring\": \"1.9.0\",\n    \"meriyah\": \"6.1.4\"\n  },\n" +
+            "  \"devDependencies\": {\n    \"rollup\": \"4.52.5\"\n  }\n" +
+            "}\n";
 
-        YtCipherService.patchEjs(temp);
+        Map<String, String> imports = YtCipherService.ejsImports(packageJson);
 
-        assertEquals(
-            "import { parse } from \"npm:meriyah\";\n" +
-            "import { generate } from \"npm:astring\";\n" +
-            "import { other } from \"./other.ts\";\n",
-            FileUtils.readString(solver));
+        Map<String, String> expected = new LinkedHashMap<>();
+        expected.put("astring", "npm:astring@1.9.0");
+        expected.put("meriyah", "npm:meriyah@6.1.4");
+        assertEquals(expected, imports);
     }
 
     @Test
-    void patchEjsIgnoresOtherFiles() throws IOException {
-        Path readme = temp.resolve("README.md");
-        FileUtils.writeString(readme, "import x from \"meriyah\"");
+    void ejsImportsRequireDependencies() {
+        assertThrows(IOException.class, () -> YtCipherService.ejsImports("{\"name\": \"ejs\"}"));
+    }
 
-        YtCipherService.patchEjs(temp);
+    @Test
+    void pinnedImportsMapTheUnversionedSpecifier() {
+        Map<String, String> imports = YtCipherService.pinnedImports("jsr:@std/cache@0.2.4, npm:foo@1.0.0");
 
-        assertEquals("import x from \"meriyah\"", FileUtils.readString(readme));
+        Map<String, String> expected = new LinkedHashMap<>();
+        expected.put("jsr:@std/cache", "jsr:@std/cache@0.2.4");
+        expected.put("npm:foo", "npm:foo@1.0.0");
+        assertEquals(expected, imports);
+    }
+
+    @Test
+    void pinnedImportsRequireAVersion() {
+        // The @ of the scope is no version
+        assertThrows(IllegalStateException.class, () -> YtCipherService.pinnedImports("jsr:@std/cache"));
+        assertThrows(IllegalStateException.class, () -> YtCipherService.pinnedImports("npm:foo"));
+    }
+
+    @Test
+    void pinnedImportsFromTheConfigAreValid() {
+        YtCipherService.pinnedImports(Config.get().getString("yt-cipher.pinned-imports"));
+    }
+
+    @Test
+    void denoJsonContainsAnImportMap() {
+        Map<String, String> imports = new LinkedHashMap<>();
+        imports.put("meriyah", "npm:meriyah@6.1.4");
+        imports.put("jsr:@std/cache", "jsr:@std/cache@0.2.4");
+
+        assertEquals("{\n" +
+            "  \"imports\": {\n" +
+            "    \"meriyah\": \"npm:meriyah@6.1.4\",\n" +
+            "    \"jsr:@std/cache\": \"jsr:@std/cache@0.2.4\"\n" +
+            "  }\n" +
+            "}\n", YtCipherService.denoJson(imports));
     }
 }

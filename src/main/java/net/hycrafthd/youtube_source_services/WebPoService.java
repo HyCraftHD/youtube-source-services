@@ -71,9 +71,13 @@ final class WebPoService extends DenoService {
             "--allow-net",
             "--allow-env",
             "--allow-sys",
-            "--allow-read=" + app + "," + runtime.getDenoDir(),
-            "server.js"
+            "--allow-read=" + app + "," + runtime.getDenoDir()
         );
+    }
+
+    @Override
+    protected String mainModule() {
+        return "server.js";
     }
 
     @Override
@@ -87,8 +91,12 @@ final class WebPoService extends DenoService {
     }
 
     /**
-     * On Deno the first generation after a start fails (botguard.js assigns globalThis.location, which is a getter in
-     * Deno workers; its cleanup then deletes the property). One throwaway request gets that out of the way.
+     * On Deno the first generation after a start always fails with "Cannot set property location of
+     * #&lt;DedicatedWorkerGlobalScope&gt; which has only a getter": botguard.js copies jsdom's window, document and location
+     * onto globalThis, and location is a read-only getter in Deno workers ({@code --location} does not change that).
+     * Its error handling then deletes globalThis.location, so every later generation works. One throwaway request gets
+     * that out of the way after every start, including restarts. It fails before any network access, so it is fast and
+     * does not contact YouTube. This relies on WORKERS=1; each further worker would need its own warm-up.
      */
     @Override
     protected void afterStart() {

@@ -6,6 +6,8 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Path;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -53,6 +55,20 @@ class YtCipherServiceIntegrationTest {
         assertEquals(200, response.status, response.toString());
         assertTrue(response.body.contains("\"decrypted_n_sig\":\""), response.toString());
         assertFalse(response.body.contains("\"decrypted_n_sig\":\"" + n + "\""), "n parameter was not transformed: " + response);
+    }
+
+    @Test
+    void usesTheEjsDependencyVersions() throws Exception {
+        Path app = service.dir.resolve(Config.get().getString("yt-cipher.commit").substring(0, 7));
+        Map<String, String> expected = YtCipherService.ejsImports(FileUtils.readString(app.resolve("ejs").resolve("package.json")));
+        String lock = FileUtils.readString(app.resolve("deno.lock"));
+
+        for (String specifier : expected.values()) {
+            String versioned = specifier.substring("npm:".length());
+            assertTrue(lock.contains("\"" + versioned + "\""), "deno.lock has no " + versioned + ":\n" + lock);
+        }
+        // ejs's sources are not patched
+        assertFalse(FileUtils.readString(app.resolve("ejs").resolve("src").resolve("utils.ts")).contains("npm:"));
     }
 
     @Test
