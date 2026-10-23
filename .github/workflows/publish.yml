@@ -38,6 +38,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
+    # Attaching the jars to the release needs write access, the default token of this repository is read-only
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
