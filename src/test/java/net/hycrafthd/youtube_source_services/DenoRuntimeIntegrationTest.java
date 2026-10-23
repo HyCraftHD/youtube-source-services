@@ -26,7 +26,7 @@ class DenoRuntimeIntegrationTest {
         Process process = new ProcessBuilder(deno.toString(), "--version").redirectErrorStream(true).start();
         String output = new String(FileUtils.readAll(process.getInputStream()), StandardCharsets.UTF_8);
         assertEquals(0, process.waitFor(), output);
-        assertTrue(output.startsWith("deno " + Versions.DENO.substring(1) + " "), output);
+        assertTrue(output.startsWith("deno " + Config.get().getString("deno.version").substring(1) + " "), output);
     }
 
     @Test

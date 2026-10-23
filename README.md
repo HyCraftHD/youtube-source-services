@@ -20,20 +20,28 @@ The library has no dependencies and targets Java 8.
 ## Usage
 
 ```java
-DenoRuntime runtime = new DenoRuntime(gameDir.resolve("youtube-source-services"));
-YtCipherService cipher = new YtCipherService(runtime, LOGGER::info);
-WebPoService pot = new WebPoService(runtime, LOGGER::info);
+YoutubeSourceServices services = YoutubeSourceServices.builder(gameDir.resolve("youtube-source-services"))
+    .log(LOGGER::info)
+    .build();
 
 YoutubeSourceOptions options = new YoutubeSourceOptions()
-    .setRemoteCipher(cipher.getUrl(), cipher.getToken(), "your-mod/1.0")
-    .setRemotePoToken(pot.getUrl(), pot.getToken());
+    .setRemoteCipher(services.cipher().getUrl(), services.cipher().getToken(), "your-mod/1.0")
+    .setRemotePoToken(services.poToken().getUrl(), services.poToken().getToken());
 
 // The first start downloads Deno and the npm packages (about 200 MB on disk), so never wait for this on the render thread
-CompletableFuture.allOf(cipher.startAsync(), pot.startAsync());
+services.start().whenComplete((ignored, error) -> {
+    if (error != null) {
+        LOGGER.error("Could not start the YouTube services", error);
+    }
+});
 ```
 
-URL and token are fixed per instance, so they can be passed to youtube-source before the services have started.
-The processes are stopped with `close()` or automatically when the JVM exits.
+- URL and token are fixed per instance, so they can be passed to youtube-source before the services have started.
+  They stay the same across restarts.
+- `stop()` stops both services, including one that is still starting. `start()` can be called again afterwards.
+- On JVM exit the services are stopped automatically.
+- Either service can be disabled with `cipher(false)` or `poToken(false)` on the builder, for example when you use your
+  own poToken server.
 
 ## Supported platforms
 
@@ -44,9 +52,10 @@ Not supported: Android (Deno has no Android builds), 32-bit operating systems an
 
 ## Updating
 
-All versions are pinned in
-[`versions.properties`](src/main/resources/net/hycrafthd/youtube_source_services/versions.properties).
-Bump `yt-cipher.commit` and `ejs.commit` together: yt-cipher's Dockerfile names the ejs commit it expects.
+Versions, download URLs, repositories, the start timeout and the restart limit are all set in
+[`services.properties`](src/main/resources/net/hycrafthd/youtube_source_services/services.properties).
+Bump `yt-cipher.commit` and `ejs.commit` together: yt-cipher's Dockerfile names the ejs commit it expects. If a new
+commit changes the log line a service prints once it is ready, update its `ready-marker` as well.
 
 ## Building and testing
 

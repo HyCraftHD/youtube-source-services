@@ -11,21 +11,30 @@ import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
  * A local HTTP service running in its own Deno process.
  * <p>
  * Port and token are chosen once per instance, so the URL handed to youtube-source stays valid when the process is
- * restarted after a crash. The service only listens on 127.0.0.1 and rejects requests without the token.
+ * stopped and started again or restarted after a crash. The service only listens on 127.0.0.1 and rejects requests
+ * without the token.
+ * <p>
+ * Starts, crash handling and restarts all run one after another on a single thread per service, so they never race
+ * each other. {@link #stop()} is the only thing that acts from outside that thread: it kills the process directly, so
+ * it neither waits for nor is overtaken by a start that is still running.
  */
-public abstract class DenoService implements AutoCloseable {
+abstract class DenoService implements LocalService {
 
-    private static final int MAX_RESTARTS = 5;
     private static final long STABLE_UPTIME_MS = TimeUnit.MINUTES.toMillis(1);
 
     protected final DenoRuntime runtime;
@@ -34,19 +43,33 @@ public abstract class DenoService implements AutoCloseable {
     private final String name;
     private final int port;
     private final String token;
+    private final long startTimeoutSeconds;
+    private final int maxRestarts;
+    private final ScheduledExecutorService executor;
 
-    private Process process;
-    private boolean stopRequested;
-    private boolean restartOnCrash = true;
-    private long startTimeoutSeconds = 300;
+    /** The launched process, while it is starting and while it runs. Cleared by whoever ends it first. */
+    private final AtomicReference<Process> process = new AtomicReference<>();
+    /** Counts calls to {@link #stop()}; starts and restarts requested before a stop see the change and give up. */
+    private final AtomicInteger stops = new AtomicInteger();
+    /** The process that finished starting; {@link #isRunning()} is only true while this is the launched one. */
+    private volatile Process ready;
+
+    // Only used on the executor thread
     private int failedRestarts;
     private long startedAt;
 
+    /** Uses the start timeout and restart limit from {@code services.properties}. */
     protected DenoService(DenoRuntime runtime, String name, Consumer<String> log) throws IOException {
+        this(runtime, name, log, Config.get().getInt("start-timeout-seconds"), Config.get().getInt("restart.max-attempts"));
+    }
+
+    protected DenoService(DenoRuntime runtime, String name, Consumer<String> log, long startTimeoutSeconds, int maxRestarts) throws IOException {
         this.runtime = runtime;
         this.name = name;
         this.dir = runtime.getBaseDir().resolve(name);
         this.log = log;
+        this.startTimeoutSeconds = startTimeoutSeconds;
+        this.maxRestarts = maxRestarts;
 
         try (ServerSocket socket = new ServerSocket(0)) {
             this.port = socket.getLocalPort();
@@ -56,70 +79,69 @@ public abstract class DenoService implements AutoCloseable {
         new SecureRandom().nextBytes(tokenBytes);
         this.token = FileUtils.toHex(tokenBytes);
 
-        Runtime.getRuntime().addShutdownHook(new Thread(this::stop, name + "-shutdown"));
+        executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, name);
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 
-    public String getName() {
+    String getName() {
         return name;
     }
 
+    @Override
     public String getUrl() {
         return "http://127.0.0.1:" + port;
     }
 
-    public int getPort() {
-        return port;
-    }
-
-    /** Value for the {@code Authorization} header, passed to youtube-source as the service password. */
+    @Override
     public String getToken() {
         return token;
     }
 
-    public synchronized boolean isRunning() {
-        return process != null && process.isAlive();
-    }
-
-    /** Whether the process is started again when it exits without {@link #stop()}. Enabled by default. */
-    public synchronized void setRestartOnCrash(boolean restartOnCrash) {
-        this.restartOnCrash = restartOnCrash;
+    @Override
+    public boolean isRunning() {
+        Process current = process.get();
+        return current != null && current == ready && current.isAlive();
     }
 
     /**
-     * How long {@link #start()} waits for the service to become ready, 300 seconds by default. Downloads are not
-     * included, but loading many npm files can take long on slow disks or with an antivirus scanning each file.
+     * Installs the service if needed and starts it in the background. Completes once it accepts requests, right away
+     * if it runs already, and exceptionally if the start fails or {@link #stop()} is called first.
      */
-    public synchronized void setStartTimeoutSeconds(long startTimeoutSeconds) {
-        this.startTimeoutSeconds = startTimeoutSeconds;
-    }
-
-    /**
-     * Starts the service on a background thread. The first start downloads Deno and the service, so never wait for
-     * this on the Minecraft render thread.
-     */
-    public CompletableFuture<Void> startAsync() {
+    CompletableFuture<Void> start() {
+        int stopsAtRequest = stops.get();
         CompletableFuture<Void> future = new CompletableFuture<>();
-        Thread thread = new Thread(() -> {
+
+        executor.execute(() -> {
             try {
-                start();
+                if (stops.get() != stopsAtRequest) {
+                    throw new CancellationException(name + " was stopped before it started");
+                }
+                failedRestarts = 0;
+                if (!isRunning()) {
+                    launch(stopsAtRequest);
+                }
                 future.complete(null);
             } catch (Throwable e) {
                 future.completeExceptionally(e);
             }
-        }, name + "-start");
-        thread.setDaemon(true);
-        thread.start();
+        });
         return future;
     }
 
-    /** Installs the service if needed, starts it and blocks until it accepts requests. Does nothing if it runs already. */
-    public synchronized void start() throws IOException, InterruptedException {
-        stopRequested = false;
-
-        if (isRunning()) {
-            return;
+    /** Stops the process, including one that is still starting, and cancels pending restarts. It can be started again. */
+    void stop() {
+        stops.incrementAndGet();
+        Process current = process.getAndSet(null);
+        if (current != null) {
+            destroy(current);
         }
+    }
 
+    /** Runs on the executor. */
+    private void launch(int stopsAtRequest) throws IOException, InterruptedException {
         Path deno = runtime.getExecutable();
         Path app = install();
 
@@ -140,7 +162,15 @@ public abstract class DenoService implements AutoCloseable {
 
         long start = System.nanoTime();
         Process started = builder.start();
-        CompletableFuture<Void> ready = new CompletableFuture<>();
+        process.set(started);
+        // Checked after publishing the process: either stop() sees and kills it, or this sees the stop
+        if (stops.get() != stopsAtRequest) {
+            abandon(started);
+            throw new CancellationException(name + " was stopped while starting");
+        }
+
+        CompletableFuture<Void> readyFuture = new CompletableFuture<>();
+        String readyMarker = readyMarker();
 
         // The output must be drained continuously, otherwise the child blocks once the pipe buffer is full
         Thread reader = new Thread(() -> {
@@ -148,110 +178,83 @@ public abstract class DenoService implements AutoCloseable {
                 String line;
                 while ((line = lines.readLine()) != null) {
                     log.accept("[" + name + "] " + line);
-                    if (line.contains(readyMarker())) {
-                        ready.complete(null);
+                    if (line.contains(readyMarker)) {
+                        readyFuture.complete(null);
                     }
                 }
             } catch (IOException ignored) {
             }
-            // The output closes when the process ends
-            ready.completeExceptionally(new IOException(name + " exited before it was ready"));
-            onProcessExit(started);
+            // The output closes when the process ends, also when stop() kills it during the start
+            readyFuture.completeExceptionally(new IOException(name + " exited before it was ready"));
+            executor.execute(() -> onExit(started));
         }, name + "-output");
         reader.setDaemon(true);
         reader.start();
 
         try {
             // A first start downloads npm/jsr modules into DENO_DIR, later starts are fast
-            ready.get(startTimeoutSeconds, TimeUnit.SECONDS);
+            readyFuture.get(startTimeoutSeconds, TimeUnit.SECONDS);
         } catch (ExecutionException | TimeoutException e) {
-            destroy(started);
+            abandon(started);
+            if (stops.get() != stopsAtRequest) {
+                throw new CancellationException(name + " was stopped while starting");
+            }
             throw new IOException(name + " failed to start", e instanceof ExecutionException ? e.getCause() : e);
         } catch (InterruptedException e) {
-            destroy(started);
+            abandon(started);
             throw e;
         }
 
-        process = started;
+        ready = started;
         startedAt = System.currentTimeMillis();
         afterStart();
         log.accept("[" + name + "] ready on " + getUrl() + " after " + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) + " ms");
     }
 
-    public synchronized void stop() {
-        stopRequested = true;
-        if (process != null) {
-            destroy(process);
-            process = null;
+    private void abandon(Process started) {
+        process.compareAndSet(started, null);
+        destroy(started);
+    }
+
+    /** Runs on the executor. */
+    private void onExit(Process exited) {
+        // Exits after stop(), of a failed start or of an already replaced process are no crash
+        if (!process.compareAndSet(exited, null)) {
+            return;
         }
+
+        log.accept("[" + name + "] exited unexpectedly with code " + exitCode(exited));
+        if (System.currentTimeMillis() - startedAt > STABLE_UPTIME_MS) {
+            failedRestarts = 0;
+        }
+        scheduleRestart(stops.get());
     }
 
-    @Override
-    public void close() {
-        stop();
-    }
+    /** Runs on the executor. */
+    private void scheduleRestart(int stopsAtCrash) {
+        if (++failedRestarts > maxRestarts) {
+            if (maxRestarts > 0) {
+                log.accept("[" + name + "] giving up after " + maxRestarts + " restarts");
+            }
+            return;
+        }
 
-    private void onProcessExit(Process exited) {
-        int delay;
-
-        synchronized (this) {
-            // Exits during start, after stop() or of an already replaced process are handled elsewhere
-            if (process != exited || stopRequested) {
+        executor.schedule(() -> {
+            if (stops.get() != stopsAtCrash || isRunning()) {
                 return;
             }
-            process = null;
-
-            log.accept("[" + name + "] exited unexpectedly with code " + exitCode(exited));
-            if (!restartOnCrash) {
-                return;
-            }
-            if (System.currentTimeMillis() - startedAt > STABLE_UPTIME_MS) {
-                failedRestarts = 0;
-            }
-            delay = nextRestartDelay();
-        }
-
-        if (delay >= 0) {
-            scheduleRestart(delay);
-        }
-    }
-
-    /** @return the delay before the next restart attempt in ms, or -1 after too many failed attempts */
-    private int nextRestartDelay() {
-        failedRestarts++;
-        if (failedRestarts > MAX_RESTARTS) {
-            log.accept("[" + name + "] giving up after " + MAX_RESTARTS + " restarts");
-            return -1;
-        }
-        return failedRestarts * 2000;
-    }
-
-    private void scheduleRestart(int delayMs) {
-        Thread thread = new Thread(() -> {
+            log.accept("[" + name + "] restarting");
             try {
-                Thread.sleep(delayMs);
-                synchronized (this) {
-                    if (stopRequested || isRunning()) {
-                        return;
-                    }
-                }
-                log.accept("[" + name + "] restarting");
-                start();
+                launch(stopsAtCrash);
+            } catch (CancellationException e) {
+                // Stopped in the meantime
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } catch (Exception e) {
                 log.accept("[" + name + "] restart failed: " + e);
-                int next;
-                synchronized (this) {
-                    next = stopRequested ? -1 : nextRestartDelay();
-                }
-                if (next >= 0) {
-                    scheduleRestart(next);
-                }
+                scheduleRestart(stopsAtCrash);
             }
-        }, name + "-restart");
-        thread.setDaemon(true);
-        thread.start();
+        }, failedRestarts * 2000L, TimeUnit.MILLISECONDS);
     }
 
     private static int exitCode(Process process) {
@@ -296,7 +299,7 @@ public abstract class DenoService implements AutoCloseable {
     /** A line printed by the service once it accepts requests. */
     protected abstract String readyMarker();
 
-    /** Runs after every successful start, before {@link #start()} returns. */
+    /** Runs after every successful start, before it completes. */
     protected void afterStart() {
     }
 }

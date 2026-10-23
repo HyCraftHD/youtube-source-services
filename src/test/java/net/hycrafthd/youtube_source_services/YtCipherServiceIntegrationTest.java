@@ -6,6 +6,8 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.TimeUnit;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -22,14 +24,14 @@ class YtCipherServiceIntegrationTest {
     @BeforeAll
     static void start() throws Exception {
         service = new YtCipherService(IntegrationSupport.runtime(), IntegrationSupport::log);
-        service.start();
+        service.start().get(10, TimeUnit.MINUTES);
         playerUrl = IntegrationSupport.currentPlayerUrl();
     }
 
     @AfterAll
     static void stop() {
         if (service != null) {
-            service.close();
+            service.stop();
         }
     }
 

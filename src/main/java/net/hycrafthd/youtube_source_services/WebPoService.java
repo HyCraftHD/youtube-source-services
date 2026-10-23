@@ -18,19 +18,21 @@ import java.util.function.Consumer;
  * Runs <a href="https://github.com/ashton045/webpo-generator">webpo-generator</a> unmodified.
  * Use with {@code YoutubeSourceOptions#setRemotePoToken(getUrl(), getToken())}.
  */
-public final class WebPoService extends DenoService {
+final class WebPoService extends DenoService {
 
-    public WebPoService(DenoRuntime runtime, Consumer<String> log) throws IOException {
+    WebPoService(DenoRuntime runtime, Consumer<String> log) throws IOException {
         super(runtime, "webpo-generator", log);
     }
 
     @Override
     protected Path install() throws IOException, InterruptedException {
-        Path app = dir.resolve(Versions.WEBPO_GENERATOR_COMMIT.substring(0, 7));
+        Config config = Config.get();
+        String commit = config.getString("webpo-generator.commit");
+        Path app = dir.resolve(commit.substring(0, 7));
 
         if (!isInstalled(app)) {
             FileUtils.deleteRecursively(app);
-            runtime.downloadGitHubArchive("ashton045/webpo-generator", Versions.WEBPO_GENERATOR_COMMIT, app);
+            runtime.downloadGitHubArchive(config.getString("webpo-generator.repository"), commit, app);
             npmInstall(app);
             markInstalled(app);
         }
@@ -81,7 +83,7 @@ public final class WebPoService extends DenoService {
 
     @Override
     protected String readyMarker() {
-        return "api listening on";
+        return Config.get().getString("webpo-generator.ready-marker");
     }
 
     /**

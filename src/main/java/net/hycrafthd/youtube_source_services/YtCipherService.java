@@ -16,20 +16,22 @@ import java.util.stream.Stream;
  * <a href="https://github.com/yt-dlp/ejs">yt-dlp/ejs</a> solver.
  * Use with {@code YoutubeSourceOptions#setRemoteCipher(getUrl(), getToken(), userAgent)}.
  */
-public final class YtCipherService extends DenoService {
+final class YtCipherService extends DenoService {
 
-    public YtCipherService(DenoRuntime runtime, Consumer<String> log) throws IOException {
+    YtCipherService(DenoRuntime runtime, Consumer<String> log) throws IOException {
         super(runtime, "yt-cipher", log);
     }
 
     @Override
     protected Path install() throws IOException {
-        Path app = dir.resolve(Versions.YT_CIPHER_COMMIT.substring(0, 7));
+        Config config = Config.get();
+        String commit = config.getString("yt-cipher.commit");
+        Path app = dir.resolve(commit.substring(0, 7));
 
         if (!isInstalled(app)) {
             FileUtils.deleteRecursively(app);
-            runtime.downloadGitHubArchive("kikkia/yt-cipher", Versions.YT_CIPHER_COMMIT, app);
-            runtime.downloadGitHubArchive("yt-dlp/ejs", Versions.EJS_COMMIT, app.resolve("ejs"));
+            runtime.downloadGitHubArchive(config.getString("yt-cipher.repository"), commit, app);
+            runtime.downloadGitHubArchive(config.getString("ejs.repository"), config.getString("ejs.commit"), app.resolve("ejs"));
             patchEjs(app.resolve("ejs").resolve("src"));
             markInstalled(app);
         }
@@ -81,6 +83,6 @@ public final class YtCipherService extends DenoService {
 
     @Override
     protected String readyMarker() {
-        return "Server listening on";
+        return Config.get().getString("yt-cipher.ready-marker");
     }
 }

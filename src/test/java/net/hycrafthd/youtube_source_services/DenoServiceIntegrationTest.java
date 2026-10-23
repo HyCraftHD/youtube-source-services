@@ -9,14 +9,17 @@ import java.net.ConnectException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
-import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -31,16 +34,16 @@ class DenoServiceIntegrationTest {
     @AfterEach
     void stop() {
         if (service != null) {
-            service.close();
+            service.stop();
         }
     }
 
     @Test
     void startsOnLocalhostAndRequiresToken() throws Exception {
-        service = new TestService(IntegrationSupport.runtime(), IntegrationSupport::log);
+        service = new TestService(5);
         assertFalse(service.isRunning());
 
-        service.startAsync().get(2, TimeUnit.MINUTES);
+        await(service.start());
 
         assertTrue(service.isRunning());
         assertTrue(service.getUrl().startsWith("http://127.0.0.1:"));
@@ -52,18 +55,20 @@ class DenoServiceIntegrationTest {
 
     @Test
     void startIsIdempotent() throws Exception {
-        service = new TestService(IntegrationSupport.runtime(), IntegrationSupport::log);
+        service = new TestService(5);
 
-        service.start();
-        service.start();
+        CompletableFuture<Void> first = service.start();
+        CompletableFuture<Void> second = service.start();
+        await(first);
+        await(second);
 
         assertEquals(1, service.starts);
     }
 
     @Test
     void stopEndsTheProcess() throws Exception {
-        service = new TestService(IntegrationSupport.runtime(), IntegrationSupport::log);
-        service.start();
+        service = new TestService(5);
+        await(service.start());
 
         service.stop();
 
@@ -72,9 +77,45 @@ class DenoServiceIntegrationTest {
     }
 
     @Test
+    void startsAgainAfterStopOnTheSamePort() throws Exception {
+        service = new TestService(5);
+        await(service.start());
+        String url = service.getUrl();
+        service.stop();
+
+        await(service.start());
+
+        assertTrue(service.isRunning());
+        assertEquals(url, service.getUrl());
+        assertEquals(200, IntegrationSupport.get(url, service.getToken()).status);
+        assertEquals(2, service.starts);
+    }
+
+    @Test
+    void stopCancelsAStartThatIsStillRunning() throws Exception {
+        service = new TestService(5);
+        service.environment.put("START_DELAY_MS", "30000");
+        CompletableFuture<Void> start = service.start();
+        IntegrationSupport.waitUntil(() -> service.launched, 30_000);
+
+        long before = System.currentTimeMillis();
+        service.stop();
+        // A future completed with a CancellationException counts as cancelled and throws it unwrapped
+        assertThrows(CancellationException.class, () -> start.get(10, TimeUnit.SECONDS));
+        assertTrue(start.isCancelled());
+        assertTrue(System.currentTimeMillis() - before < 10_000, "stop() waited for the start");
+        assertFalse(service.isRunning());
+
+        // And it can still be started afterwards
+        service.environment.remove("START_DELAY_MS");
+        await(service.start());
+        assertTrue(service.isRunning());
+    }
+
+    @Test
     void restartsOnTheSamePortAfterACrash() throws Exception {
-        service = new TestService(IntegrationSupport.runtime(), IntegrationSupport::log);
-        service.start();
+        service = new TestService(5);
+        await(service.start());
         String url = service.getUrl();
 
         IntegrationSupport.get(url + "/crash", service.getToken());
@@ -86,9 +127,8 @@ class DenoServiceIntegrationTest {
 
     @Test
     void doesNotRestartWhenDisabled() throws Exception {
-        service = new TestService(IntegrationSupport.runtime(), IntegrationSupport::log);
-        service.setRestartOnCrash(false);
-        service.start();
+        service = new TestService(0);
+        await(service.start());
 
         IntegrationSupport.get(service.getUrl() + "/crash", service.getToken());
         IntegrationSupport.waitUntil(() -> !service.isRunning(), 10_000);
@@ -99,14 +139,32 @@ class DenoServiceIntegrationTest {
     }
 
     @Test
-    void failsWhenTheProcessExitsBeforeItIsReady() throws Exception {
-        service = new TestService(IntegrationSupport.runtime(), IntegrationSupport::log);
-        service.exitImmediately = true;
+    void doesNotRestartAfterStop() throws Exception {
+        service = new TestService(5);
+        await(service.start());
 
-        IOException error = assertThrows(IOException.class, service::start);
+        service.stop();
+        Thread.sleep(4_000);
 
-        assertTrue(error.getCause() != null && String.valueOf(error.getCause().getMessage()).contains("exited before it was ready"), error.toString());
         assertFalse(service.isRunning());
+        assertEquals(1, service.starts);
+    }
+
+    @Test
+    void failsWhenTheProcessExitsBeforeItIsReady() throws Exception {
+        service = new TestService(5);
+        service.environment.put("EXIT_IMMEDIATELY", "1");
+
+        ExecutionException error = assertThrows(ExecutionException.class, () -> service.start().get(2, TimeUnit.MINUTES));
+
+        assertInstanceOf(IOException.class, error.getCause());
+        Throwable cause = error.getCause().getCause();
+        assertTrue(cause != null && String.valueOf(cause.getMessage()).contains("exited before it was ready"), error.toString());
+        assertFalse(service.isRunning());
+    }
+
+    private static void await(CompletableFuture<Void> future) throws Exception {
+        future.get(2, TimeUnit.MINUTES);
     }
 
     /** Serves 200 with the right token, 401 without, and exits on /crash. */
@@ -114,6 +172,8 @@ class DenoServiceIntegrationTest {
 
         private static final String SCRIPT = String.join("\n",
             "if (Deno.env.get('EXIT_IMMEDIATELY') === '1') Deno.exit(2);",
+            "const delay = Number(Deno.env.get('START_DELAY_MS') ?? '0');",
+            "if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));",
             "const token = Deno.env.get('API_TOKEN');",
             "Deno.serve({",
             "  hostname: Deno.env.get('HOST'),",
@@ -126,11 +186,12 @@ class DenoServiceIntegrationTest {
             "});",
             "");
 
+        final Map<String, String> environment = new HashMap<>();
         volatile int starts;
-        boolean exitImmediately;
+        volatile boolean launched;
 
-        TestService(DenoRuntime runtime, Consumer<String> log) throws IOException {
-            super(runtime, "test-service", log);
+        TestService(int maxRestarts) throws IOException {
+            super(IntegrationSupport.runtime(), "test-service", IntegrationSupport::log, 120, maxRestarts);
         }
 
         @Override
@@ -142,12 +203,13 @@ class DenoServiceIntegrationTest {
 
         @Override
         protected List<String> arguments(Path app) {
+            launched = true;
             return Arrays.asList("--allow-net=127.0.0.1", "--allow-env", "server.js");
         }
 
         @Override
         protected Map<String, String> environment(Path app) {
-            return Collections.singletonMap("EXIT_IMMEDIATELY", exitImmediately ? "1" : "0");
+            return new HashMap<>(environment);
         }
 
         @Override
