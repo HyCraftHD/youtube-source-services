@@ -24,6 +24,18 @@ The library has no dependencies and targets Java 8.
 
 ## Usage
 
+Releases are published to `https://repo.u-team.info`:
+
+```kotlin
+repositories {
+    maven("https://repo.u-team.info")
+}
+
+dependencies {
+    implementation("net.hycrafthd.lavaplayer-extras.youtube-source-services:youtube-source-services:<version>")
+}
+```
+
 ```java
 YoutubeSourceServices services = YoutubeSourceServices.builder(gameDir.resolve("youtube-source-services"))
     .log(LOGGER::info)
