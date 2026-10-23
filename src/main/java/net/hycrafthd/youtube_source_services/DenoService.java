@@ -35,7 +35,7 @@ import java.util.function.Consumer;
  * JVM, not even when the JVM is killed and its shutdown hooks do not run.
  * <p>
  * Starts, crash handling and restarts all run one after another on a single thread per service, so they never race
- * each other. {@link #stop()} is the only thing that acts from outside that thread: it kills the process directly, so
+ * each other. Calls to {@link #start()} while a start is still pending share that start instead of queueing more. {@link #stop()} is the only thing that acts from outside that thread: it kills the process directly, so
  * it neither waits for nor is overtaken by a start that is still running.
  */
 abstract class DenoService implements LocalService {
@@ -83,6 +83,8 @@ abstract class DenoService implements LocalService {
     private final AtomicInteger stops = new AtomicInteger();
     /** The process that finished starting; {@link #isRunning()} is only true while this is the launched one. */
     private volatile Process ready;
+    /** The last start requested through {@link #start()}, shared by further calls until it completes. */
+    private final AtomicReference<PendingStart> pendingStart = new AtomicReference<>();
 
     // Only used on the executor thread
     private int failedRestarts;
@@ -137,26 +139,55 @@ abstract class DenoService implements LocalService {
     /**
      * Installs the service if needed and starts it in the background. Completes once it accepts requests, right away
      * if it runs already, and exceptionally if the start fails or {@link #stop()} is called first.
+     * <p>
+     * While a start is pending, further calls share it and its result instead of starting again. Once it has completed,
+     * the next call starts the service if it is not running, so a failed start can be retried.
      */
     CompletableFuture<Void> start() {
-        int stopsAtRequest = stops.get();
-        CompletableFuture<Void> future = new CompletableFuture<>();
+        while (true) {
+            int stopsAtRequest = stops.get();
+            PendingStart current = pendingStart.get();
+            // A start requested before a stop() is about to be cancelled and must not be shared
+            if (current != null && !current.future.isDone() && current.stops == stopsAtRequest) {
+                return copyOf(current.future);
+            }
 
-        executor.execute(() -> {
-            try {
-                if (stops.get() != stopsAtRequest) {
-                    throw new CancellationException(name + " was stopped before it started");
-                }
-                failedRestarts = 0;
-                if (!isRunning()) {
-                    launch(stopsAtRequest);
-                }
-                future.complete(null);
-            } catch (Throwable e) {
-                future.completeExceptionally(e);
+            PendingStart next = new PendingStart(stopsAtRequest);
+            if (pendingStart.compareAndSet(current, next)) {
+                executor.execute(() -> runStart(next));
+                return copyOf(next.future);
+            }
+        }
+    }
+
+    /** Runs on the executor. */
+    private void runStart(PendingStart start) {
+        try {
+            if (stops.get() != start.stops) {
+                throw new CancellationException(name + " was stopped before it started");
+            }
+            failedRestarts = 0;
+            if (!isRunning()) {
+                launch(start.stops);
+            }
+            start.future.complete(null);
+        } catch (Throwable e) {
+            start.future.completeExceptionally(e);
+        }
+    }
+
+    /** Each caller gets its own future, so cancelling it does not affect the others waiting for the same start. */
+    private static CompletableFuture<Void> copyOf(CompletableFuture<Void> future) {
+        CompletableFuture<Void> copy = new CompletableFuture<>();
+        // Completes with the same exception, not a CompletionException, so a cancelled start stays cancelled
+        future.whenComplete((result, error) -> {
+            if (error != null) {
+                copy.completeExceptionally(error);
+            } else {
+                copy.complete(result);
             }
         });
-        return future;
+        return copy;
     }
 
     /** Stops the process, including one that is still starting, and cancels pending restarts. It can be started again. */
@@ -341,6 +372,16 @@ abstract class DenoService implements LocalService {
     }
 
     private static final class PortInUseException extends IOException {
+    }
+
+    private static final class PendingStart {
+
+        final int stops;
+        final CompletableFuture<Void> future = new CompletableFuture<>();
+
+        PendingStart(int stops) {
+            this.stops = stops;
+        }
     }
 
     private static int exitCode(Process process) {

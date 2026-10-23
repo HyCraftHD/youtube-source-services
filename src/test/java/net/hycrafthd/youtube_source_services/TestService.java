@@ -33,6 +33,8 @@ class TestService extends DenoService {
     final Map<String, String> environment = new HashMap<>();
     volatile int starts;
     volatile boolean launched;
+    /** Process launches, counted on the service's executor thread. */
+    volatile int launches;
     /** Handed out as the first internal port, to simulate another program taking it. */
     volatile int takenPort;
 
@@ -54,6 +56,7 @@ class TestService extends DenoService {
     @Override
     protected List<String> arguments(Path app) {
         launched = true;
+        launches++;
         return Arrays.asList("--allow-net=127.0.0.1", "--allow-env");
     }
 

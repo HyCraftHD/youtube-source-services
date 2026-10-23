@@ -11,6 +11,7 @@ import java.io.InputStreamReader;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CancellationException;
@@ -65,6 +66,75 @@ class DenoServiceIntegrationTest {
         await(second);
 
         assertEquals(1, service.starts);
+    }
+
+    @Test
+    void startsWhilePendingShareOneLaunch() throws Exception {
+        service = new TestService(5);
+        service.environment.put("START_DELAY_MS", "2000");
+
+        List<CompletableFuture<Void>> starts = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            starts.add(service.start());
+        }
+        for (CompletableFuture<Void> start : starts) {
+            await(start);
+        }
+
+        assertEquals(1, service.launches);
+        assertEquals(1, service.starts);
+    }
+
+    @Test
+    void startsWhilePendingShareAFailureAndTheNextStartRetries() throws Exception {
+        service = new TestService(5);
+        service.environment.put("EXIT_IMMEDIATELY", "1");
+
+        List<CompletableFuture<Void>> starts = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            starts.add(service.start());
+        }
+        for (CompletableFuture<Void> start : starts) {
+            ExecutionException error = assertThrows(ExecutionException.class, () -> start.get(2, TimeUnit.MINUTES));
+            assertInstanceOf(IOException.class, error.getCause());
+        }
+        assertEquals(1, service.launches);
+
+        service.environment.remove("EXIT_IMMEDIATELY");
+        await(service.start());
+        assertEquals(2, service.launches);
+        assertTrue(service.isRunning());
+    }
+
+    @Test
+    void cancellingOneStartDoesNotCancelTheOthers() throws Exception {
+        service = new TestService(5);
+        service.environment.put("START_DELAY_MS", "2000");
+
+        CompletableFuture<Void> cancelled = service.start();
+        CompletableFuture<Void> other = service.start();
+        cancelled.cancel(false);
+
+        await(other);
+        assertTrue(service.isRunning());
+        assertEquals(1, service.launches);
+    }
+
+    @Test
+    void startRightAfterStopIsNotCancelledWithThePendingStart() throws Exception {
+        service = new TestService(5);
+        service.environment.put("START_DELAY_MS", "30000");
+        CompletableFuture<Void> first = service.start();
+        IntegrationSupport.waitUntil(() -> service.launched, 30_000);
+
+        service.stop();
+        service.environment.remove("START_DELAY_MS");
+        CompletableFuture<Void> second = service.start();
+
+        assertThrows(CancellationException.class, () -> first.get(10, TimeUnit.SECONDS));
+        await(second);
+        assertTrue(service.isRunning());
+        assertEquals(2, service.launches);
     }
 
     @Test

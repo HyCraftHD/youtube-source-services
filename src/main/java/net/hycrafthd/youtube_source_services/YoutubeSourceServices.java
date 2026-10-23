@@ -50,6 +50,10 @@ public final class YoutubeSourceServices {
     /**
      * Starts all enabled services in parallel in the background. The first start downloads Deno and the services, so
      * never wait for the result on the Minecraft render thread.
+     * <p>
+     * Can be called as often as needed, for example before every load: completes right away while the services run,
+     * shares a start that is still pending, and only starts them again once they are down, so a failed start can be
+     * retried. Nothing is downloaded or launched before the first call.
      *
      * @return completes once all services accept requests, or exceptionally if one fails to start or is stopped first
      */

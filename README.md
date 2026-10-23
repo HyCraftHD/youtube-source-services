@@ -55,6 +55,10 @@ services.start().whenComplete((ignored, error) -> {
 
 - URL and token are fixed per instance, so they can be passed to youtube-source before the services have started.
   They stay the same across restarts.
+- `start()` can be called as often as needed, for example before every load: it completes right away while the
+  services run, shares a start that is still pending, and only starts them again once they are down, so a failed start
+  can be retried. Nothing is downloaded or launched before the first call, so the services can be started only when
+  they are actually used.
 - `stop()` stops both services, including one that is still starting. `start()` can be called again afterwards.
 - On JVM exit the services are stopped automatically.
 - Either service can be disabled with `cipher(false)` or `poToken(false)` on the builder, for example when you use your
