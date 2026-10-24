@@ -8,6 +8,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.UnknownHostException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -19,6 +20,12 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 final class PortForwarder implements Closeable {
 
+    /**
+     * The address everything listens on and connects to, also in the service urls and the Deno side.
+     * {@link InetAddress#getLoopbackAddress()} would be ::1 when Java prefers IPv6, as Forge and NeoForge configure it.
+     */
+    static final InetAddress LOOPBACK = loopback();
+
     private static final int CONNECT_TIMEOUT_MS = 2_000;
 
     private final ServerSocket server;
@@ -26,7 +33,7 @@ final class PortForwarder implements Closeable {
     private volatile int target;
 
     PortForwarder(String name) throws IOException {
-        server = new ServerSocket(0, 50, InetAddress.getLoopbackAddress());
+        server = new ServerSocket(0, 50, LOOPBACK);
 
         AtomicInteger threads = new AtomicInteger();
         executor = Executors.newCachedThreadPool(runnable -> {
@@ -82,7 +89,7 @@ final class PortForwarder implements Closeable {
 
         Socket service = new Socket();
         try {
-            service.connect(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), CONNECT_TIMEOUT_MS);
+            service.connect(new InetSocketAddress(LOOPBACK, port), CONNECT_TIMEOUT_MS);
             client.setTcpNoDelay(true);
             service.setTcpNoDelay(true);
         } catch (IOException e) {
@@ -136,9 +143,17 @@ final class PortForwarder implements Closeable {
         }
     }
 
+    private static InetAddress loopback() {
+        try {
+            return InetAddress.getByName("127.0.0.1");
+        } catch (UnknownHostException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     /** A port that is free right now, for the service to listen on internally. */
     static int freePort() throws IOException {
-        try (ServerSocket socket = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+        try (ServerSocket socket = new ServerSocket(0, 1, LOOPBACK)) {
             return socket.getLocalPort();
         }
     }

@@ -8,7 +8,6 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -214,7 +213,7 @@ class DenoServiceIntegrationTest {
     @Test
     void retriesWithAnotherInternalPortWhenItIsTaken() throws Exception {
         service = new TestService(5);
-        try (ServerSocket taken = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+        try (ServerSocket taken = new ServerSocket(0, 1, PortForwarder.LOOPBACK)) {
             service.takenPort = taken.getLocalPort();
 
             await(service.start());

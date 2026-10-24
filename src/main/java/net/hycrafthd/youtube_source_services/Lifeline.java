@@ -2,7 +2,6 @@ package net.hycrafthd.youtube_source_services;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.concurrent.ExecutorService;
@@ -24,7 +23,7 @@ final class Lifeline {
     private final ExecutorService executor;
 
     private Lifeline() throws IOException {
-        server = new ServerSocket(0, 50, InetAddress.getLoopbackAddress());
+        server = new ServerSocket(0, 50, PortForwarder.LOOPBACK);
 
         AtomicInteger threads = new AtomicInteger();
         executor = Executors.newCachedThreadPool(runnable -> {

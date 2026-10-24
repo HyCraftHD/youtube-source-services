@@ -8,7 +8,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
@@ -26,7 +25,7 @@ class PortForwarderTest {
     void setUp() throws IOException {
         forwarder = new PortForwarder("test");
         // Answers each connection with "echo:" and everything it received, after the client finished sending
-        backend = new ServerSocket(0, 50, InetAddress.getLoopbackAddress());
+        backend = new ServerSocket(0, 50, PortForwarder.LOOPBACK);
         Thread thread = new Thread(() -> {
             while (!backend.isClosed()) {
                 try (Socket socket = backend.accept()) {
@@ -98,7 +97,7 @@ class PortForwarderTest {
 
     /** Sends the text, ends the request and reads the response until the connection closes. */
     private String exchange(String text) throws IOException {
-        try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), forwarder.getPort())) {
+        try (Socket socket = new Socket(PortForwarder.LOOPBACK, forwarder.getPort())) {
             socket.setSoTimeout(10_000);
             try {
                 socket.getOutputStream().write(text.getBytes(StandardCharsets.UTF_8));

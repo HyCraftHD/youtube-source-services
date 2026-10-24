@@ -71,6 +71,10 @@ jobs:
       - name: Integration tests
         run: ./gradlew integrationTest --stacktrace
 
+      # Forge and NeoForge start Minecraft with java.net.preferIPv6Addresses set
+      - name: Integration tests preferring IPv6
+        run: ./gradlew ipv6Test --stacktrace
+
       - name: Report test results
         if: always()
         uses: mikepenz/action-junit-report@v5

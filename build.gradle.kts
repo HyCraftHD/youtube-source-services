@@ -71,6 +71,30 @@ val integrationTest by tasks.registering(Test::class) {
     }
 }
 
+val ipv6Test by tasks.registering(Test::class) {
+    description = "Runs the service lifecycle in a JVM that prefers IPv6, the way Forge and NeoForge start Minecraft."
+    group = "verification"
+
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    shouldRunAfter(integrationTest)
+
+    useJUnitPlatform {
+        includeTags("integration")
+    }
+    filter {
+        includeTestsMatching("*.DenoServiceIntegrationTest")
+    }
+
+    jvmArgs("-Djava.net.preferIPv6Addresses=true")
+    systemProperty("youtube_source_services.test.dir", integrationTest.get().systemProperties["youtube_source_services.test.dir"]!!)
+
+    testLogging {
+        events("passed", "skipped", "failed")
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+    }
+}
+
 publishing {
     publications {
         create<MavenPublication>("maven") {
