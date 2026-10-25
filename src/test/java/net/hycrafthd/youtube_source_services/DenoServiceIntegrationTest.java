@@ -289,6 +289,7 @@ class DenoServiceIntegrationTest {
         assertInstanceOf(IOException.class, error.getCause());
         Throwable cause = error.getCause().getCause();
         assertTrue(cause != null && String.valueOf(cause.getMessage()).contains("exited before it was ready"), error.toString());
+        assertTrue(cause.getMessage().contains("test service gives up"), "the error includes the last output: " + cause.getMessage());
         assertFalse(service.isRunning());
     }
 

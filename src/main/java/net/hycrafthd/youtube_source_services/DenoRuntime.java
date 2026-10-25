@@ -14,8 +14,11 @@ final class DenoRuntime {
     private final Path baseDir;
     private Path executable;
 
-    DenoRuntime(Path baseDir) {
-        this.baseDir = baseDir.toAbsolutePath();
+    DenoRuntime(Path baseDir) throws IOException {
+        // Deno resolves the files it reads to their real path and checks that against --allow-read, so the paths given
+        // to it must be real too: no symbolic links and no short DOS style names that Windows keeps for long names, such
+        // as C:\Users\EXAMPL~1 for C:\Users\exampleuser. Unlike toRealPath(), this also works for missing directories.
+        this.baseDir = baseDir.toFile().getCanonicalFile().toPath();
     }
 
     Path getBaseDir() {

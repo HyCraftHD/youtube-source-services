@@ -7,7 +7,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
@@ -42,6 +44,7 @@ abstract class DenoService implements LocalService {
 
     private static final long STABLE_UPTIME_MS = TimeUnit.MINUTES.toMillis(1);
     private static final int PORT_ATTEMPTS = 3;
+    private static final int OUTPUT_LINES_IN_ERROR = 20;
     private static final String WATCHDOG_MODULE = "youtube-source-services-watchdog.js";
     private static final String ENTRY_MODULE = "youtube-source-services-main.js";
     private static final String LIFELINE_ENV = "YOUTUBE_SOURCE_SERVICES_LIFELINE_PORT";
@@ -255,10 +258,16 @@ abstract class DenoService implements LocalService {
 
         // The output must be drained continuously, otherwise the child blocks once the pipe buffer is full
         Thread reader = new Thread(() -> {
+            // Included in the error, so a failed start shows why even when the log is discarded or not shown
+            Deque<String> lastLines = new ArrayDeque<>();
             try (BufferedReader lines = new BufferedReader(new InputStreamReader(started.getInputStream(), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = lines.readLine()) != null) {
                     log.accept("[" + name + "] " + line);
+                    lastLines.addLast(line);
+                    if (lastLines.size() > OUTPUT_LINES_IN_ERROR) {
+                        lastLines.removeFirst();
+                    }
                     if (line.contains(readyMarker)) {
                         readyFuture.complete(null);
                     } else if (line.contains("AddrInUse")) {
@@ -269,7 +278,7 @@ abstract class DenoService implements LocalService {
             } catch (IOException ignored) {
             }
             // The output closes when the process ends, also when stop() kills it during the start
-            readyFuture.completeExceptionally(new IOException(name + " exited before it was ready"));
+            readyFuture.completeExceptionally(new IOException(exitedMessage(lastLines)));
             executor.execute(() -> onExit(started));
         }, name + "-output");
         reader.setDaemon(true);
@@ -302,6 +311,11 @@ abstract class DenoService implements LocalService {
         startedAt = System.currentTimeMillis();
         afterStart();
         log.accept("[" + name + "] ready on " + getUrl() + " (internal port " + port + ") after " + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) + " ms");
+    }
+
+    private String exitedMessage(Deque<String> lastLines) {
+        String message = name + " exited before it was ready";
+        return lastLines.isEmpty() ? message : message + ", last output:\n" + String.join("\n", lastLines);
     }
 
     /** Imports the watchdog before the service; modules are evaluated in import order. */

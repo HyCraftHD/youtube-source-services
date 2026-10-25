@@ -15,7 +15,10 @@ import java.util.Map;
 class TestService extends DenoService {
 
     private static final String SCRIPT = String.join("\n",
-        "if (Deno.env.get('EXIT_IMMEDIATELY') === '1') Deno.exit(2);",
+        "if (Deno.env.get('EXIT_IMMEDIATELY') === '1') {",
+        "  console.error('test service gives up');",
+        "  Deno.exit(2);",
+        "}",
         "const delay = Number(Deno.env.get('START_DELAY_MS') ?? '0');",
         "if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));",
         "const token = Deno.env.get('API_TOKEN');",
