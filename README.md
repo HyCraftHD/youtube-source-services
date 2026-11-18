@@ -14,6 +14,8 @@ pinned commits into a directory of your choice. Each service then runs as its ow
 - listens only on `127.0.0.1` and rejects requests without a random per-session token,
 - runs in Deno's permission sandbox (read/write access only to its own directories),
 - is restarted automatically if it crashes,
+- is installed again once if it fails to start from an existing installation, for example after a cleanup tool deleted
+  some of its files,
 - ends together with the JVM, even when the JVM is killed and its shutdown hooks do not run.
 
 The URL of each service never changes: the library itself keeps its port open for the whole session and forwards

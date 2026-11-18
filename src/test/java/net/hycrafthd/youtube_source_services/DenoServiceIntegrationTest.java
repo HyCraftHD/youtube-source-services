@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -291,6 +292,33 @@ class DenoServiceIntegrationTest {
         assertTrue(cause != null && String.valueOf(cause.getMessage()).contains("exited before it was ready"), error.toString());
         assertTrue(cause.getMessage().contains("test service gives up"), "the error includes the last output: " + cause.getMessage());
         assertFalse(service.isRunning());
+    }
+
+    @Test
+    void installsADamagedInstallationAgain() throws Exception {
+        service = new TestService(5);
+        service.keepInstallation = true;
+        await(service.start());
+        service.stop();
+
+        // Deleted by a cleanup tool, while the marker of the complete installation is still there
+        Files.delete(service.dir.resolve("app").resolve("server.js"));
+        await(service.start());
+
+        assertTrue(service.isRunning());
+        assertEquals(3, service.launches, "the start, the failed launch and the launch after installing again");
+        assertEquals(1, service.repairLaunches);
+    }
+
+    @Test
+    void doesNotInstallAgainWhenAFreshInstallationFails() throws Exception {
+        service = new TestService(5);
+        service.environment.put("EXIT_IMMEDIATELY", "1");
+
+        assertThrows(ExecutionException.class, () -> service.start().get(2, TimeUnit.MINUTES));
+
+        assertEquals(1, service.launches);
+        assertEquals(0, service.repairLaunches);
     }
 
     /** The fixed port stays open, but connections are closed right away instead of running into a timeout. */

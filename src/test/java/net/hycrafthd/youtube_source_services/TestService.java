@@ -40,6 +40,10 @@ class TestService extends DenoService {
     volatile int launches;
     /** Handed out as the first internal port, to simulate another program taking it. */
     volatile int takenPort;
+    /** Keeps an existing installation like the real services do, instead of installing anew for every launch. */
+    volatile boolean keepInstallation;
+    /** Launches while a damaged installation is installed again. */
+    volatile int repairLaunches;
 
     TestService(DenoRuntime runtime, int maxRestarts) throws IOException {
         super(runtime, "test-service", IntegrationSupport::log, 120, maxRestarts);
@@ -51,8 +55,14 @@ class TestService extends DenoService {
 
     @Override
     protected Path install() throws IOException {
-        Path app = Files.createDirectories(dir.resolve("app"));
+        Path app = dir.resolve("app");
+        if (keepInstallation && isInstalled(app)) {
+            return app;
+        }
+        FileUtils.deleteRecursively(app);
+        Files.createDirectories(app);
         FileUtils.writeString(app.resolve("server.js"), SCRIPT);
+        markInstalled(app);
         return app;
     }
 
@@ -60,6 +70,9 @@ class TestService extends DenoService {
     protected List<String> arguments(Path app) {
         launched = true;
         launches++;
+        if (isRepairing()) {
+            repairLaunches++;
+        }
         return Arrays.asList("--allow-net=127.0.0.1", "--allow-env");
     }
 

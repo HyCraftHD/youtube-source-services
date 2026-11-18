@@ -3,6 +3,7 @@ package net.hycrafthd.youtube_source_services;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -97,13 +98,18 @@ final class YtCipherService extends DenoService {
     @Override
     protected List<String> arguments(Path app) throws IOException {
         Path cache = cacheDir();
-        return Arrays.asList(
+        List<String> arguments = new ArrayList<>(Arrays.asList(
             "--config=" + app.resolve("deno.json"),
             "--allow-net",
             "--allow-env",
             "--allow-read=" + app + "," + cache,
             "--allow-write=" + cache
-        );
+        ));
+        // yt-cipher has no install step, Deno fills its module cache on the first run
+        if (isRepairing()) {
+            arguments.add("--reload");
+        }
+        return arguments;
     }
 
     @Override

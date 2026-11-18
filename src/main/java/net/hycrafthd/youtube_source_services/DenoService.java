@@ -92,6 +92,10 @@ abstract class DenoService implements LocalService {
     // Only used on the executor thread
     private int failedRestarts;
     private long startedAt;
+    /** Whether the current launch installed the service itself, so its files cannot be damaged yet. */
+    private boolean installedNow;
+    /** Set while a damaged installation is installed again, see {@link #isRepairing()}. */
+    private boolean repairing;
 
     /** Uses the start timeout and restart limit from {@code services.properties}. */
     protected DenoService(DenoRuntime runtime, String name, Consumer<String> log) throws IOException {
@@ -203,8 +207,35 @@ abstract class DenoService implements LocalService {
         }
     }
 
-    /** Runs on the executor. */
+    /**
+     * Runs on the executor. Cleanup tools and virus scanners can delete single files of an installation, for example in
+     * the temp directory, which the marker file does not notice. So a launch from an existing installation that fails
+     * installs the service again once, with Deno's module cache refreshed, which is usually damaged the same way.
+     */
     private void launch(int stopsAtRequest) throws IOException, InterruptedException {
+        installedNow = false;
+        try {
+            launchInstalled(stopsAtRequest);
+        } catch (IOException e) {
+            if (installedNow) {
+                throw e;
+            }
+            log.accept("[" + name + "] failed to start from its existing installation, installing it again: " + e.getMessage());
+            repairing = true;
+            try {
+                FileUtils.deleteRecursively(dir);
+                launchInstalled(stopsAtRequest);
+            } catch (IOException repairError) {
+                repairError.addSuppressed(e);
+                throw repairError;
+            } finally {
+                repairing = false;
+            }
+        }
+    }
+
+    /** Runs on the executor. */
+    private void launchInstalled(int stopsAtRequest) throws IOException, InterruptedException {
         Path deno = runtime.getExecutable();
         Path app = install();
         writeEntryModule(app);
@@ -424,8 +455,17 @@ abstract class DenoService implements LocalService {
         return Files.exists(app.resolve(".installed"));
     }
 
-    protected static void markInstalled(Path app) throws IOException {
+    protected void markInstalled(Path app) throws IOException {
         Files.createFile(app.resolve(".installed"));
+        installedNow = true;
+    }
+
+    /**
+     * Whether a damaged installation is being installed again. Deno must then download the modules it caches in
+     * {@code DENO_DIR} again ({@code --reload}), because it trusts its cache even when files in it were deleted.
+     */
+    protected boolean isRepairing() {
+        return repairing;
     }
 
     /** Downloads and prepares the service if needed and returns its working directory. */

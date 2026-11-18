@@ -8,6 +8,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -44,7 +45,11 @@ final class WebPoService extends DenoService {
      * optional native {@code canvas} package is never built; jsdom works without it.
      */
     private void npmInstall(Path app) throws IOException, InterruptedException {
-        ProcessBuilder builder = new ProcessBuilder(runtime.getExecutable().toString(), "install")
+        List<String> command = new ArrayList<>(Arrays.asList(runtime.getExecutable().toString(), "install"));
+        if (isRepairing()) {
+            command.add("--reload");
+        }
+        ProcessBuilder builder = new ProcessBuilder(command)
             .directory(app.toFile())
             .redirectErrorStream(true);
         builder.environment().put("DENO_DIR", runtime.getDenoDir().toString());
